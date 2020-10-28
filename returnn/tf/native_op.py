@@ -15,6 +15,7 @@ except ImportError:
   from tensorflow.python.ops import rnn_cell
 from threading import RLock
 import typing
+from types import SimpleNamespace
 
 import returnn.native_op as native_op
 import returnn.tf.compat as tf_compat
@@ -69,7 +70,7 @@ class OpMaker(object):
   """
   https://www.tensorflow.org/guide/extend/op
   """
-  with_cuda = None  # type: typing.Optional[bool]
+  with_cuda = True  # type: typing.Optional[bool]
   # https://github.com/tensorflow/tensorflow/issues/6602
   tf_blas_gemm_workaround = tf_util.tf_version_tuple() < (1, 6, 0)
   global_lock = RLock()
@@ -471,7 +472,7 @@ class OpMaker(object):
       """ % format_args
     else:
       code_gpu_op = ""
-    return code_header + code_cpu_op + code_gpu_op
+    return [code_header, code_cpu_op, code_gpu_op]
 
   def _make_mod(self):
     if self.cache_key in self.mod_cache:
@@ -539,7 +540,7 @@ class OpMaker(object):
       print("WARNING: OpMaker: no BLAS lib found")
     comp = tf_util.OpCodeCompiler(
       base_name=self.name, code_version=self.description.code_version,
-      code=self._make_code(),
+      code=''.join(self._make_code()),
       include_deps=[self.support_native_op_cpp_filename],
       ld_flags=ld_flags,
       use_cuda_if_available=self.with_cuda,
@@ -558,10 +559,12 @@ class OpMaker(object):
     with self.global_lock:
       if self.cache_key in self.op_cache:
         return self.op_cache[self.cache_key]
-      mod = self._make_mod()
-      op = getattr(mod, camel_case_to_snake_case(self.op_name))
-      op._op_maker = self
-      op._op_module = mod
+      mod = self._make_code()
+      op = SimpleNamespace(op_name = camel_case_to_snake_case(self.op_name),
+                           op_sources = mod, _op_maker = self)
+      #op = getattr(mod, camel_case_to_snake_case(self.op_name))
+      #op._op_maker = self
+      #op._op_module = mod
       self.op_cache[self.cache_key] = op
 
       if self.description.is_grad_defined:
@@ -571,6 +574,7 @@ class OpMaker(object):
                                 search_for_numpy_blas=self.search_for_numpy_blas,
                                 blas_lib=self.blas_lib)
         grad_op = grad_op_maker.make_op()
+        op.grad_op = grad_op
 
         def grad_func(fwd_op, *bwd_grads):
           """
@@ -596,7 +600,7 @@ class OpMaker(object):
       else:
         grad_op = None
 
-      if grad_func:
+      if False: # grad_func:
         from tensorflow.python.framework import ops
         ops.RegisterGradient(self.name)(grad_func)
         op.grad_func = grad_func
